@@ -67,14 +67,11 @@ module SimpleCov
               class_.add_element(REXML::Element.new('methods'))
               class_.add_element(lines = REXML::Element.new('lines'))
 
-              branched_lines = file.branches.map(&:start_line)
-              branched_lines_covered = file.covered_branches.map(&:start_line)
-
               file.lines.each do |file_line|
                 if file_line.covered? || file_line.missed?
                   lines.add_element(line = REXML::Element.new('line'))
                   set_line_attributes(line, file_line)
-                  set_branch_attributes(line, file_line, branched_lines, branched_lines_covered) if SimpleCov.branch_coverage?
+                  set_branch_attributes(line, file_line, file.branches_report) if SimpleCov.branch_coverage?
                 end
               end
             end
@@ -131,14 +128,31 @@ module SimpleCov
           line.attributes['hits'] = file_line.coverage.to_s
         end
 
-        def set_branch_attributes(line, file_line, branched_lines, branched_lines_covered)
-          if branched_lines.include? file_line.number
-            pct_coverage, branches_covered = branched_lines_covered.include?(file_line.number) ? [100, '1/1'] : [0, '0/1']
+        def set_branch_attributes(line, file_line, branches_report)
+          branch_details = branches_report.fetch(file_line.number, [])
+          if branch_details.any?
+            branches_covered = add_branch_conditions(line, branch_details)
+            pct_coverage = (branches_covered * 100) / branch_details.size
+
             line.attributes['branch'] = 'true'
-            line.attributes['condition-coverage'] = "#{pct_coverage}% (#{branches_covered})"
+            line.attributes['condition-coverage'] = "#{pct_coverage}% (#{branches_covered}/#{branch_details.size})"
           else
             line.attributes['branch'] = 'false'
           end
+        end
+
+        def add_branch_conditions(line, branch_details)
+          line.add_element(conditions = REXML::Element.new('conditions'))
+
+          branches_covered = 0
+          branch_details.each_with_index do |(branch_type, hit_count), index|
+            conditions.add_element(condition = REXML::Element.new('condition'))
+            condition.attributes['number'] = index
+            condition.attributes['type'] = branch_type
+            condition.attributes['coverage'] = hit_count.positive? ? '100%' : '0%'
+            branches_covered += 1 if hit_count.positive?
+          end
+          branches_covered
         end
 
         def set_xml_head(lines=[])
