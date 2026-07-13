@@ -1,4 +1,6 @@
 require 'test/unit'
+require 'fileutils'
+require 'tmpdir'
 require 'nokogiri'
 require 'open-uri'
 require 'simplecov'
@@ -6,32 +8,35 @@ require 'simplecov-cobertura'
 
 class CoberturaFormatterTest < Test::Unit::TestCase
   def setup
+    @tmpdir = Dir.mktmpdir('simplecov-cobertura-test')
     SimpleCov.enable_coverage :branch
-    SimpleCov.coverage_dir "tmp"
+    SimpleCov.coverage_dir @tmpdir
+    @no_filter = SimpleCov::Result::FilterConfig.new(filters: [], cover_filters: [], groups: {})
     @result = SimpleCov::Result.new({
-      "#{__FILE__}" => {
-        "lines" => [1, 1, 1, nil, 1, nil, 1, 0, nil, 1, nil, nil, nil],
-        "branches" => {
-          [:if, 0, 3, 4, 3, 21] =>
-          {[:then, 1, 3, 4, 3, 10] => 0, [:else, 2, 3, 4, 3, 21] => 1},
-            [:if, 3, 5, 4, 5, 26] =>
-          {[:then, 4, 5, 16, 5, 20] => 1, [:else, 5, 5, 23, 5, 26] => 0},
-            [:if, 6, 7, 4, 11, 7] =>
-          {[:then, 7, 8, 6, 8, 10] => 0, [:else, 8, 10, 6, 10, 9] => 1},
-            [:if, 9, 12, 4, 12, 15] =>
-          {[:then, 10, 12, 6, 12, 10] => 1, [:else, 11, 12, 13, 12, 15] => 0},
-            [:if, 12, 13, 4, 13, 20] =>
-          {[:then, 13, 13, 6, 13, 15] => 1, [:else, 14, 13, 18, 13, 20] => 0},
-            [:if, 15, 15, 4, 15, 25] =>
-          {[:then, 16, 15, 6, 15, 20] => 0, [:else, 17, 15, 23, 15, 25] => 0}
-        }
-      }
-    })
+                                      "#{__FILE__}" => {
+                                        "lines" => [1, 1, 1, nil, 1, nil, 1, 0, nil, 1, nil, nil, nil],
+                                        "branches" => {
+                                          [:if, 0, 3, 4, 3, 21] =>
+                                            { [:then, 1, 3, 4, 3, 10] => 0, [:else, 2, 3, 4, 3, 21] => 1 },
+                                          [:if, 3, 5, 4, 5, 26] =>
+                                            { [:then, 4, 5, 16, 5, 20] => 1, [:else, 5, 5, 23, 5, 26] => 0 },
+                                          [:if, 6, 7, 4, 11, 7] =>
+                                            { [:then, 7, 8, 6, 8, 10] => 0, [:else, 8, 10, 6, 10, 9] => 1 },
+                                          [:if, 9, 12, 4, 12, 15] =>
+                                            { [:then, 10, 12, 6, 12, 10] => 1, [:else, 11, 12, 13, 12, 15] => 0 },
+                                          [:if, 12, 13, 4, 13, 20] =>
+                                            { [:then, 13, 13, 6, 13, 15] => 1, [:else, 14, 13, 18, 13, 20] => 0 },
+                                          [:if, 15, 15, 4, 15, 25] =>
+                                            { [:then, 16, 15, 6, 15, 20] => 0, [:else, 17, 15, 23, 15, 25] => 0 }
+                                        }
+                                      }
+                                    }, filter_config: @no_filter)
     @formatter = SimpleCov::Formatter::CoberturaFormatter.new
   end
 
   def teardown
     SimpleCov.groups.clear
+    FileUtils.remove_entry(@tmpdir) if @tmpdir && Dir.exist?(@tmpdir)
   end
 
   def test_format_save_file
@@ -54,17 +59,6 @@ class CoberturaFormatterTest < Test::Unit::TestCase
     output_regex = /Coverage report generated for #{@result.command_name} to #{result_path}.\nLine Coverage: (.*)\nBranch Coverage: (.*)/
     assert_match(output_regex, output)
   end
-
-  # Rather than support HTTPS the HTTP client was removed from libxml2 / xmllint:
-  # https://gitlab.gnome.org/GNOME/libxml2/-/issues/160
-  # I am not sure what this means for Nokogiri or this issue, but it certainly means something will change soon.
-  # Disable this test until it becomes clear what the new behavior should be.
-  # def test_format_dtd_validates
-  #   xml = @formatter.format(@result)
-  #   options = Nokogiri::XML::ParseOptions::DTDLOAD
-  #   doc = Nokogiri::XML::Document.parse(xml, nil, nil, options)
-  #   assert_empty doc.external_subset.validate(doc)
-  # end
 
   def test_no_groups
     xml = @formatter.format(@result)
@@ -110,14 +104,57 @@ class CoberturaFormatterTest < Test::Unit::TestCase
     assert_equal '1', first_line.attribute('hits').value
     last_line = lines.last
     assert_equal '10', last_line.attribute('number').value
-    assert_equal 'true', last_line.attribute('branch').value
+    assert_equal 'false', last_line.attribute('branch').value
     assert_equal '1', last_line.attribute('hits').value
+
+    # Verify condition-coverage accurately reflects branch counts per condition line
+    branched_lines = lines.select { |l| l.attribute('branch').value == 'true' }
+    condition_coverages = branched_lines.map { |l| [l.attribute('number').value, l.attribute('condition-coverage').value] }
+
+    # Line 3: condition [:if, 0, 3, ...] with 2 branches (then=>0, else=>1) => 50% (1/2)
+    assert_include condition_coverages, ['3', '50% (1/2)']
+    # Line 5: condition [:if, 3, 5, ...] with 2 branches (then=>1, else=>0) => 50% (1/2)
+    assert_include condition_coverages, ['5', '50% (1/2)']
+    # Line 7: condition [:if, 6, 7, ...] with 2 branches (then=>0, else=>1) => 50% (1/2)
+    assert_include condition_coverages, ['7', '50% (1/2)']
+
+    # Lines 12, 13, 15 have nil line coverage so they don't get <line> elements,
+    # but their conditions are still correctly grouped by condition start line.
+    assert_equal 3, branched_lines.length
+  end
+
+  def test_conditions_elements
+    xml = @formatter.format(@result)
+    doc = Nokogiri::XML::Document.parse(xml)
+
+    # Verify that branched lines have <conditions> child elements
+    lines = doc.xpath '/coverage/packages/package/classes/class/lines/line'
+    branched_lines = lines.select { |l| l.attribute('branch').value == 'true' }
+
+    branched_lines.each do |bl|
+      conditions = bl.xpath('conditions/condition')
+      assert_equal 2, conditions.length, "Expected 2 conditions for line #{bl.attribute('number').value}"
+
+      conditions.each_with_index do |cond, idx|
+        assert_equal idx.to_s, cond.attribute('number').value
+        assert_not_nil cond.attribute('type')
+        assert_match(/\A(0%|100%)\z/, cond.attribute('coverage').value)
+      end
+    end
+
+    # Verify specific condition details for line 3 (then=>0, else=>1)
+    line_3 = lines.find { |l| l.attribute('number').value == '3' }
+    conditions_3 = line_3.xpath('conditions/condition')
+    assert_equal '0%', conditions_3[0].attribute('coverage').value   # then => 0
+    assert_equal '100%', conditions_3[1].attribute('coverage').value # else => 1
   end
 
   def test_groups
-    SimpleCov.add_group('test_group', 'test/')
+    SimpleCov.group('test_group', 'test/')
+    group_filter = SimpleCov::Result::FilterConfig.new(filters: [], cover_filters: [], groups: SimpleCov.groups)
+    result = SimpleCov::Result.new(@result.original_result, filter_config: group_filter)
 
-    xml = @formatter.format(@result)
+    xml = @formatter.format(result)
     doc = Nokogiri::XML::Document.parse(xml)
 
     coverage = doc.xpath '/coverage'
@@ -160,24 +197,35 @@ class CoberturaFormatterTest < Test::Unit::TestCase
     assert_equal '1', first_line.attribute('hits').value
     last_line = lines.last
     assert_equal '10', last_line.attribute('number').value
-    assert_equal 'true', last_line.attribute('branch').value
+    assert_equal 'false', last_line.attribute('branch').value
     assert_equal '1', last_line.attribute('hits').value
   end
 
   def test_supports_root_project_path
     old_root = SimpleCov.root
-    SimpleCov.root("/tmp")
-    expected_base = old_root[1..-1] # Remove leading "/"
+    @alt_root = Dir.mktmpdir('simplecov-cobertura-root')
+    SimpleCov.root(@alt_root)
+    expected_prefix = Pathname.new(old_root).relative_path_from(Pathname.new(@alt_root)).to_s
 
-    xml = @formatter.format(@result)
+    result = SimpleCov::Result.new(@result.original_result, filter_config: @no_filter)
+    xml = @formatter.format(result)
     doc = Nokogiri::XML::Document.parse(xml)
 
     classes = doc.xpath '/coverage/packages/package/classes/class'
     assert_equal 1, classes.length
     clazz = classes.first
-    assert_equal "../#{expected_base}/test/simplecov-cobertura_test.rb", clazz.attribute('name').value
-    assert_equal "../#{expected_base}/test/simplecov-cobertura_test.rb", clazz.attribute('filename').value
+    assert_equal "#{expected_prefix}/test/simplecov-cobertura_test.rb", clazz.attribute('name').value
+    assert_equal "#{expected_prefix}/test/simplecov-cobertura_test.rb", clazz.attribute('filename').value
   ensure
     SimpleCov.root(old_root)
+    FileUtils.remove_entry(@alt_root) if @alt_root && Dir.exist?(@alt_root)
+  end
+
+  def test_condition_start_line_handles_both_key_forms
+    formatter = SimpleCov::Formatter::CoberturaFormatter.new
+    assert_equal 3, formatter.send(:condition_start_line, [:if, 0, 3, 4, 5, 10])
+    assert_equal 3, formatter.send(:condition_start_line, '[:if, 0, 3, 4, 5, 10]')
+    assert_equal 7, formatter.send(:condition_start_line, '[:case, 12, 7, 0, 9, 3]')
+    assert_nil formatter.send(:condition_start_line, 42)
   end
 end
