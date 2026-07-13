@@ -159,6 +159,88 @@ class CoberturaFormatterTest < Test::Unit::TestCase
     assert_equal '100%', conditions_3[1].attribute('coverage').value # else => 1
   end
 
+  def test_conditions_elements_complex_nested_branches
+    # Simulate a case/when with multiple branches on the same line,
+    # plus a nested if on another line — tests that conditions accumulate
+    # correctly when multiple conditions target the same start line.
+    complex_result = SimpleCov::Result.new({
+      "#{__FILE__}" => {
+        "lines" => [1, 1, 1, 1, 0, 0, 1, nil, 1],
+        "branches" => {
+          # case/when on line 2 with 4 branches (simulates case with 3 whens + else)
+          [:case, 0, 2, 4, 7, 7] => {
+            [:when, 1, 3, 6, 3, 15] => 5,
+            [:when, 2, 4, 6, 4, 15] => 0,
+            [:when, 3, 5, 6, 5, 15] => 0,
+            [:else, 4, 6, 6, 6, 15] => 3
+          },
+          # nested if on line 3 (inside first when)
+          [:if, 5, 3, 8, 3, 30] => {
+            [:then, 6, 3, 8, 3, 20] => 2,
+            [:else, 7, 3, 22, 3, 30] => 3
+          },
+          # another if on line 7 — all branches covered
+          [:if, 8, 7, 4, 7, 20] => {
+            [:then, 9, 7, 4, 7, 12] => 1,
+            [:else, 10, 7, 14, 7, 20] => 1
+          }
+        }
+      }
+    }, filter_config: @no_filter)
+
+    xml = @formatter.format(complex_result)
+    doc = Nokogiri::XML::Document.parse(xml)
+
+    lines = doc.xpath '/coverage/packages/package/classes/class/lines/line'
+
+    # Line 2: case/when with 4 branches (2 covered: when1 + else)
+    line_2 = lines.find { |l| l.attribute('number').value == '2' }
+    assert_not_nil line_2, "Expected a line element for line 2"
+    assert_equal 'true', line_2.attribute('branch').value
+    assert_equal '50% (2/4)', line_2.attribute('condition-coverage').value
+    conditions_2 = line_2.xpath('conditions/condition')
+    assert_equal 4, conditions_2.length
+    # when1 => 5 hits (covered), when2 => 0 (not), when3 => 0 (not), else => 3 (covered)
+    assert_equal '100%', conditions_2[0].attribute('coverage').value
+    assert_equal '0%', conditions_2[1].attribute('coverage').value
+    assert_equal '0%', conditions_2[2].attribute('coverage').value
+    assert_equal '100%', conditions_2[3].attribute('coverage').value
+    # Verify type attributes come from branch keys
+    assert_equal 'when', conditions_2[0].attribute('type').value
+    assert_equal 'when', conditions_2[1].attribute('type').value
+    assert_equal 'when', conditions_2[2].attribute('type').value
+    assert_equal 'else', conditions_2[3].attribute('type').value
+
+    # Line 3: nested if with 2 branches (both covered)
+    line_3 = lines.find { |l| l.attribute('number').value == '3' }
+    assert_not_nil line_3, "Expected a line element for line 3"
+    assert_equal 'true', line_3.attribute('branch').value
+    assert_equal '100% (2/2)', line_3.attribute('condition-coverage').value
+    conditions_3 = line_3.xpath('conditions/condition')
+    assert_equal 2, conditions_3.length
+    assert_equal '100%', conditions_3[0].attribute('coverage').value
+    assert_equal '100%', conditions_3[1].attribute('coverage').value
+    assert_equal 'then', conditions_3[0].attribute('type').value
+    assert_equal 'else', conditions_3[1].attribute('type').value
+
+    # Line 7: simple if, fully covered
+    line_7 = lines.find { |l| l.attribute('number').value == '7' }
+    assert_not_nil line_7, "Expected a line element for line 7"
+    assert_equal 'true', line_7.attribute('branch').value
+    assert_equal '100% (2/2)', line_7.attribute('condition-coverage').value
+    conditions_7 = line_7.xpath('conditions/condition')
+    assert_equal 2, conditions_7.length
+    assert_equal '100%', conditions_7[0].attribute('coverage').value
+    assert_equal '100%', conditions_7[1].attribute('coverage').value
+
+    # Non-branched lines should have branch='false' and no conditions
+    non_branched = lines.select { |l| l.attribute('branch').value == 'false' }
+    non_branched.each do |nb|
+      assert_equal 0, nb.xpath('conditions').length,
+                   "Line #{nb.attribute('number').value} should not have conditions"
+    end
+  end
+
   def test_groups
     SimpleCov.group('test_group', 'test/')
     group_filter = SimpleCov::Result::FilterConfig.new(filters: [], cover_filters: [], groups: SimpleCov.groups)
