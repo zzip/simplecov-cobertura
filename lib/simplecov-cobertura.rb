@@ -3,6 +3,7 @@ require 'rexml/document'
 require 'rexml/element'
 require 'pathname'
 require 'simplecov'
+
 require_relative 'simplecov-cobertura/version'
 
 module SimpleCov
